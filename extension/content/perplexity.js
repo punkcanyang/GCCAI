@@ -92,8 +92,8 @@
       
       // Structural heuristic fallbacks for Perplexity
       if (!isQuery && !isAnswer) {
-        // Prevent grabbing huge wrapper elements by strictly looking at current attributes
-        if (className.includes('prose') || className.includes('markdown')) {
+        // Note: 'prose' alone is already caught by isAnswer above, so only check 'markdown'
+        if (className.includes('markdown')) {
           isAnswer = true;
         } else if (className.match(/\b(text-lg|text-xl|text-2xl|text-3xl|font-medium|font-semibold)\b/)) {
           isQuery = true;

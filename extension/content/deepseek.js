@@ -105,59 +105,74 @@
     const messages = [];
     console.log('[GCCAI] Deepseek: Extracting messages...');
 
-    // Find all text blocks that might be messages
-    const allElements = document.querySelectorAll('div, p, section, article');
-    
-    allElements.forEach(el => {
-      const text = el.textContent?.trim() || '';
-      const className = typeof el.className === 'string' ? el.className.toLowerCase() : '';
-      
-      // Skip short text, navigation, etc
-      if (text.length < 20 || text.length > 2000) return;
-      if (className.includes('nav') || className.includes('sidebar') || 
-          className.includes('header') || className.includes('footer') ||
-          className.includes('button')) return;
-      if (el.closest('nav') || el.closest('aside') || el.closest('header')) return;
-      
-      // Check if this might be a message
-      let isUser = className.includes('user') || className.includes('human') || className.includes('query') || className.includes('prompt');
-      let isAssistant = className.includes('assistant') || className.includes('ai') || className.includes('response') || className.includes('answer');
-      
-      // Structural heuristics for DeepSeek (since classes are often obfuscated)
-      if (!isUser && !isAssistant) {
-        // Only target the specific element, avoid using querySelector to prevent capturing top-level wrappers containing sidemenus
-        if (className.includes('ds-markdown') || className.includes('markdown')) {
-          isAssistant = true;
-        } else if (el.hasAttribute('dir') && el.getAttribute('dir') === 'auto') {
-          isUser = true;
-        }
-      }
-      
-      if (isUser || isAssistant) {
-        const truncatedContent = text.substring(0, 500);
-        // Deduplicate messages with exact same content prefix
-        if (!messages.some(m => m.content === truncatedContent)) {
-          messages.push({
-            role: isUser ? 'user' : 'assistant',
-            content: truncatedContent
-          });
-        }
-      }
-    });
+    // Primary: Target DeepSeek's known DOM markers directly
+    // .ds-markdown is the stable class for AI rendered responses
+    const mdEls = Array.from(document.querySelectorAll('.ds-markdown'))
+      .filter(el => !el.closest('nav, aside, header') && !el.parentElement?.closest('.ds-markdown'));
 
-    // If no messages found with class detection, try alternating pattern
+    if (mdEls.length > 0) {
+      // Find chat container: lowest common ancestor of all .ds-markdown elements
+      let chatContainer = mdEls[0].parentElement;
+      for (let i = 1; i < mdEls.length; i++) {
+        while (chatContainer && !chatContainer.contains(mdEls[i])) {
+          chatContainer = chatContainer.parentElement;
+        }
+      }
+      // For single-message conversations, walk up a few levels to capture user message
+      if (mdEls.length === 1 && chatContainer) {
+        for (let i = 0; i < 3 && chatContainer.parentElement && chatContainer.parentElement !== document.body; i++) {
+          chatContainer = chatContainer.parentElement;
+        }
+      }
+
+      if (chatContainer && chatContainer !== document.body) {
+        // User messages: [dir="auto"] within chat container, not inside .ds-markdown
+        const userEls = Array.from(chatContainer.querySelectorAll('[dir="auto"]'))
+          .filter(el => {
+            if (el.closest('.ds-markdown')) return false;
+            if (el.querySelector('.ds-markdown')) return false;
+            if (el.querySelector('[dir="auto"]')) return false;
+            const text = el.textContent?.trim() || '';
+            return text.length >= 2;
+          });
+
+        // Combine and sort by document order
+        const candidates = [
+          ...mdEls.map(el => ({ el, role: 'assistant' })),
+          ...userEls.map(el => ({ el, role: 'user' }))
+        ].sort((a, b) => {
+          const pos = a.el.compareDocumentPosition(b.el);
+          if (pos & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
+          if (pos & Node.DOCUMENT_POSITION_PRECEDING) return 1;
+          return 0;
+        });
+
+        // Deduplicate by content prefix and collect
+        const seen = new Set();
+        candidates.forEach(({ el, role }) => {
+          const text = el.textContent?.trim() || '';
+          if (text.length < 2) return;
+          const key = text.substring(0, 200);
+          if (seen.has(key)) return;
+          seen.add(key);
+          messages.push({ role, content: text.substring(0, 500) });
+        });
+      }
+    }
+
+    // Fallback: generic heuristic if targeted approach found nothing
     if (messages.length === 0) {
+      const allElements = document.querySelectorAll('div, p, section, article');
       const textBlocks = [];
       allElements.forEach(el => {
         const text = el.textContent?.trim() || '';
         if (text.length > 50 && text.length < 1000) {
-          // Check if this is a leaf element (no children or only text)
           if (el.children.length === 0 || el.querySelector('p, span')) {
             textBlocks.push(text);
           }
         }
       });
-      
+
       for (let i = 0; i < Math.min(textBlocks.length, 4); i++) {
         messages.push({
           role: i % 2 === 0 ? 'user' : 'assistant',
@@ -261,14 +276,16 @@
 
 /*
 [For Future AI]
-1.  Key assumptions made: 
+1.  Key assumptions made:
     - Assuming DeepSeek chat URLs conform to `/\/([a-zA-Z0-9-_]+)$/` patterns like `/chat/s/ab12cd...`.
-    - Assuming messages match `.ds-markdown` for AI responses, or `dir="auto"` / text leaves for User prompts.
-    - Assumes the user wants identical messages deduplicated by exact match of the first 500 characters.
-2.  Potential edge cases to watch: 
-    - DeepSeek may change `.ds-markdown` to completely generic hashes. In that case, we need to inspect inline styles or node depth logic.
+    - AI responses are identified by `.ds-markdown` class (targeted querySelectorAll, not broad iteration).
+    - User messages are identified by `[dir="auto"]` scoped within the chat container (LCA of .ds-markdown elements) to avoid sidebar false positives.
+    - Deduplication uses first 200 chars of text as key.
+2.  Potential edge cases to watch:
+    - DeepSeek may change `.ds-markdown` to completely generic hashes. In that case, the fallback heuristic kicks in.
+    - Single-message conversations: chat container is found by walking up 3 levels from the .ds-markdown parent.
+    - `[dir="auto"]` within the chat container could still match non-message elements (e.g., thinking blocks). Filter by `!el.querySelector('[dir="auto"]')` takes the deepest match only.
     - DeepSeek's SSR/SPA routing may swallow `window.location.href` mutation events; keep the `setInterval` robust.
-    - If user messages start having `.ds-markdown` class, the scraper will think they are AI. 
-3.  Dependencies on other modules: 
+3.  Dependencies on other modules:
     - Depends on `chrome.runtime.sendMessage` communicating with `background.js` and adhering to `UPDATE_CONVERSATIONS` & `UPDATE_MESSAGES` typings.
 */
