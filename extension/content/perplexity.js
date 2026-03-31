@@ -1,4 +1,4 @@
-// Perplexity conversation list scraper - focused on DOM scraping
+// Perplexity conversation list scraper - simplified DOM-only version
 (function() {
   'use strict';
 
@@ -10,246 +10,167 @@
   }
   let lastConversationsHash = '';
 
-  // Try to extract from IndexedDB as well
-  async function readFromIndexedDB() {
-    const dbNames = ['perplexity', 'perplexity-db', 'perplexity_web'];
+  function extractConversations() {
     const conversations = [];
-    
-    for (const dbName of dbNames) {
-      try {
-        const db = await new Promise((resolve, reject) => {
-          const request = indexedDB.open(dbName);
-          request.onsuccess = () => resolve(request.result);
-          request.onerror = () => reject(null);
-        }).catch(() => null);
-        
-        if (!db) continue;
-        
-        const storeNames = Array.from(db.objectStoreNames);
-        console.log('[GCCAI] Perplexity IndexedDB stores:', storeNames);
-        
-        for (const storeName of storeNames) {
-          try {
-            const tx = db.transaction([storeName], 'readonly');
-            const store = tx.objectStore(storeName);
-            const data = await new Promise((resolve, reject) => {
-              const request = store.getAll();
-              request.onsuccess = () => resolve(request.result);
-              request.onerror = () => reject([]);
-            }).catch(() => []);
-            
-            if (Array.isArray(data)) {
-              data.forEach(item => {
-                const id = item.id || item.uuid || item.thread_id || item.key;
-                const title = item.title || item.name || item.query || '';
-                const timestamp = item.created_at || item.updated_at || item.timestamp;
-                
-                if (id && title && !conversations.some(c => c.id === String(id))) {
-                  let lastUpdated = null;
-                  if (timestamp) {
-                    lastUpdated = typeof timestamp === 'number' 
-                      ? (timestamp < 1000000000000 ? timestamp * 1000 : timestamp)
-                      : Date.parse(timestamp);
-                  }
-                  
-                  conversations.push({
-                    id: String(id),
-                    platform: PLATFORM,
-                    title: String(title).substring(0, 100),
-                    url: `${window.location.origin}/search/${id}`,
-                    lastUpdated: lastUpdated || undefined
-                  });
-                }
-              });
-            }
-          } catch (e) {}
-        }
-      } catch (e) {}
-    }
-    
-    return conversations;
-  }
+    console.log('[GCCAI] Perplexity: Starting conversation extraction...');
+    console.log('[GCCAI] Perplexity: Current URL:', window.location.href);
 
-  // Aggressive DOM scraping
-  function extractFromDOM() {
-    const conversations = [];
-    const seenIds = new Set();
+    // Log all links on the page for debugging
+    const allLinks = document.querySelectorAll('a');
+    console.log('[GCCAI] Perplexity: Total links found:', allLinks.length);
 
-    // Try all possible selectors for conversation links
-    const selectors = [
-      'a[href*="/search/"]',
-      'a[href*="/thread/"]',
-      'a[href*="/c/"]',
-      'a[href*="perplexity.ai/search/"]',
-      '[class*="thread"] a',
-      '[class*="history"] a',
-      '[class*="conversation"] a',
-      '[class*="sidebar"] a',
-      'nav a',
-      'aside a',
-      '[role="navigation"] a',
-      '[role="listitem"] a'
-    ];
-
-    for (const selector of selectors) {
-      try {
-        const links = document.querySelectorAll(selector);
-        
-        links.forEach(link => {
-          const href = link.getAttribute('href') || '';
-          if (!href) return;
-          
-          // Skip non-conversation links
-          if (href === '#' || href === '/' || href.includes('settings') || href.includes('login')) return;
-          
-          // Extract ID from URL
-          let id = null;
-          const searchMatch = href.match(/\/search\/([a-f0-9-]+)/);
-          const threadMatch = href.match(/\/thread\/([a-f0-9-]+)/);
-          const cMatch = href.match(/\/c\/([a-f0-9-]+)/);
-          const uuidMatch = href.match(/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/);
-          
-          id = (searchMatch || threadMatch || cMatch || uuidMatch)?.[1] || null;
-          
-          if (!id || seenIds.has(id)) return;
-          
-          const title = link.textContent?.trim() || link.querySelector('span, div, p')?.textContent?.trim() || '';
-          if (!title || title.length < 3) return;
-          
-          seenIds.add(id);
-          const fullUrl = href.startsWith('http') ? href : window.location.origin + href;
-          
-          conversations.push({
-            id,
-            platform: PLATFORM,
-            title: title.substring(0, 100),
-            url: fullUrl
-          });
-        });
-        
-        if (conversations.length > 0) break;
-      } catch (e) {}
-    }
-
-    return conversations;
-  }
-
-  async function extractConversations() {
-    // Try IndexedDB first
-    const indexedDBConvs = await readFromIndexedDB();
-    console.log('[GCCAI] Perplexity IndexedDB conversations:', indexedDBConvs.length);
-    
-    // Also try DOM
-    const domConvs = extractFromDOM();
-    console.log('[GCCAI] Perplexity DOM conversations:', domConvs.length);
-    
-    // Merge, preferring IndexedDB data
-    const allConversations = [...indexedDBConvs];
-    domConvs.forEach(domConv => {
-      if (!allConversations.some(c => c.id === domConv.id)) {
-        allConversations.push(domConv);
+    // Find links that look like conversation links
+    allLinks.forEach((link, index) => {
+      const href = link.getAttribute('href') || '';
+      const text = link.textContent?.trim() || '';
+      
+      // Log potential conversation links
+      if (href.includes('/search/') || href.includes('/thread/') || 
+          href.length > 30 || text.length > 10) {
+        console.log(`[GCCAI] Perplexity: Link ${index}:`, { href: href.substring(0, 100), text: text.substring(0, 50) });
       }
     });
-    
-    console.log('[GCCAI] Perplexity total conversations:', allConversations.length);
-    return allConversations;
+
+    // Try different URL patterns
+    const patterns = [
+      { regex: /\/search\/([a-f0-9-]+)/i, name: 'search' },
+      { regex: /\/thread\/([a-f0-9-]+)/i, name: 'thread' },
+      { regex: /\/c\/([a-f0-9-]+)/i, name: 'c' },
+      { regex: /\/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/i, name: 'uuid' }
+    ];
+
+    allLinks.forEach(link => {
+      const href = link.getAttribute('href') || '';
+      const text = link.textContent?.trim() || '';
+      
+      if (!href || href === '/' || href === '#') return;
+      if (href.startsWith('http') && !href.includes('perplexity.ai')) return;
+      if (text.length < 3 || text.length > 200) return;
+
+      for (const pattern of patterns) {
+        const match = href.match(pattern.regex);
+        if (match && match[1]) {
+          const id = match[1];
+          if (!conversations.some(c => c.id === id)) {
+            console.log(`[GCCAI] Perplexity: Found conversation (${pattern.name}):`, { id, text: text.substring(0, 50) });
+            conversations.push({
+              id,
+              platform: PLATFORM,
+              title: text || 'Untitled',
+              url: href.startsWith('http') ? href : window.location.origin + href
+            });
+          }
+          break;
+        }
+      }
+    });
+
+    console.log('[GCCAI] Perplexity: Total conversations found:', conversations.length);
+    return conversations;
   }
 
   function extractMessages() {
     const messages = [];
+    console.log('[GCCAI] Perplexity: Extracting messages...');
 
-    const selectors = [
-      '[class*="QueryBox"]',
-      '[class*="query"]',
-      '[class*="user"]',
-      '[class*="human"]',
-      '[class*="Ask"]'
-    ];
+    // Find all text blocks that might be messages
+    const allElements = document.querySelectorAll('div, p, section');
+    
+    allElements.forEach(el => {
+      const text = el.textContent?.trim() || '';
+      const classList = (el.className || '').toLowerCase();
+      
+      // Skip short text, navigation, etc
+      if (text.length < 20 || text.length > 2000) return;
+      if (classList.includes('nav') || classList.includes('sidebar') || 
+          classList.includes('header') || classList.includes('footer')) return;
+      if (el.closest('nav') || el.closest('aside') || el.closest('header')) return;
+      
+      // Check if this might be a message
+      const isQuery = classList.includes('query') || classList.includes('question') || 
+                      classList.includes('user') || classList.includes('prompt');
+      const isAnswer = classList.includes('answer') || classList.includes('response') || 
+                       classList.includes('prose') || classList.includes('ai');
+      
+      if (isQuery || isAnswer) {
+        messages.push({
+          role: isQuery ? 'user' : 'assistant',
+          content: text.substring(0, 500)
+        });
+      }
+    });
 
-    for (const selector of selectors) {
-      const elements = document.querySelectorAll(selector);
-      elements.forEach(el => {
-        const content = el.textContent?.trim() || '';
-        if (content && content.length > 5) {
-          messages.push({ role: 'user', content: content.substring(0, 500) });
+    // If no messages found with class detection, try alternating pattern
+    if (messages.length === 0) {
+      const textBlocks = [];
+      allElements.forEach(el => {
+        const text = el.textContent?.trim() || '';
+        if (text.length > 50 && text.length < 1000) {
+          if (!el.querySelector('div') || el.children.length === 0) {
+            textBlocks.push(text);
+          }
         }
       });
-      if (messages.length > 0) break;
+      
+      for (let i = 0; i < Math.min(textBlocks.length, 4); i++) {
+        messages.push({
+          role: i % 2 === 0 ? 'user' : 'assistant',
+          content: textBlocks[i].substring(0, 500)
+        });
+      }
     }
 
-    const answerSelectors = [
-      '[class*="AnswerBox"]',
-      '[class*="answer"]',
-      '[class*="prose"]',
-      '[class*="response"]',
-      '[class*="markdown"]'
-    ];
-
-    for (const selector of answerSelectors) {
-      const elements = document.querySelectorAll(selector);
-      elements.forEach(el => {
-        const content = el.textContent?.trim() || '';
-        if (content && content.length > 10) {
-          messages.push({ role: 'assistant', content: content.substring(0, 500) });
-        }
-      });
-      if (messages.length > 1) break;
-    }
-
+    console.log('[GCCAI] Perplexity: Messages found:', messages.length);
     return messages;
   }
 
   function getCurrentConversationId() {
     const path = window.location.pathname;
-    const searchMatch = path.match(/\/search\/([a-f0-9-]+)/);
-    const threadMatch = path.match(/\/thread\/([a-f0-9-]+)/);
-    const cMatch = path.match(/\/c\/([a-f0-9-]+)/);
-    const uuidMatch = path.match(/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/);
-    
-    return (searchMatch || threadMatch || cMatch || uuidMatch)?.[1] || null;
+    const match = path.match(/\/(search|thread|c)\/([a-f0-9-]+)/) ||
+                  path.match(/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/);
+    return match ? (match[2] || match[1]) : null;
   }
 
-  async function syncConversations() {
-    const conversations = await extractConversations();
+  function syncConversations() {
+    const conversations = extractConversations();
+    if (conversations.length === 0) return;
+
     const newHash = hashConversations(conversations);
+    if (newHash === lastConversationsHash) return;
 
-    if (newHash !== lastConversationsHash && conversations.length > 0) {
-      lastConversationsHash = newHash;
+    lastConversationsHash = newHash;
+    const currentIds = new Set(conversations.map(c => c.id));
+    const deletedIds = new Set([...knownConversationIds].filter(id => !currentIds.has(id)));
+    knownConversationIds = currentIds;
 
-      const currentIds = new Set(conversations.map(c => c.id));
-      const deletedIds = new Set([...knownConversationIds].filter(id => !currentIds.has(id)));
+    chrome.runtime.sendMessage({
+      type: 'UPDATE_CONVERSATIONS',
+      platform: PLATFORM,
+      conversations
+    });
 
-      knownConversationIds = currentIds;
-
+    if (deletedIds.size > 0) {
       chrome.runtime.sendMessage({
-        type: 'UPDATE_CONVERSATIONS',
+        type: 'DELETE_CONVERSATIONS',
         platform: PLATFORM,
-        conversations
+        conversationIds: Array.from(deletedIds)
       });
-
-      if (deletedIds.size > 0) {
-        chrome.runtime.sendMessage({
-          type: 'DELETE_CONVERSATIONS',
-          platform: PLATFORM,
-          conversationIds: Array.from(deletedIds)
-        });
-      }
     }
   }
 
   function syncCurrentMessages() {
     const conversationId = getCurrentConversationId();
-    if (conversationId) {
-      const messages = extractMessages();
-      if (messages.length > 0) {
-        chrome.runtime.sendMessage({
-          type: 'UPDATE_MESSAGES',
-          platform: PLATFORM,
-          conversationId,
-          messages
-        });
-      }
-    }
+    if (!conversationId) return;
+
+    const messages = extractMessages();
+    if (messages.length === 0) return;
+
+    chrome.runtime.sendMessage({
+      type: 'UPDATE_MESSAGES',
+      platform: PLATFORM,
+      conversationId,
+      messages
+    });
   }
 
   function debounce(fn, delay) {
@@ -265,27 +186,17 @@
 
   // Initial sync
   setTimeout(() => {
+    console.log('[GCCAI] Perplexity: Initial sync...');
     syncConversations();
     syncCurrentMessages();
   }, 3000);
-
-  // Observe sidebar
-  const sidebar = document.querySelector('nav, aside, [class*="sidebar"]');
-  if (sidebar) {
-    const observer = new MutationObserver((mutations) => {
-      const hasChanges = mutations.some(m =>
-        m.type === 'childList' && (m.addedNodes.length > 0 || m.removedNodes.length > 0)
-      );
-      if (hasChanges) debouncedSyncConversations();
-    });
-    observer.observe(sidebar, { childList: true, subtree: false });
-  }
 
   // Sync on navigation
   let lastUrl = window.location.href;
   setInterval(() => {
     if (window.location.href !== lastUrl) {
       lastUrl = window.location.href;
+      console.log('[GCCAI] Perplexity: URL changed, syncing...');
       setTimeout(() => {
         syncConversations();
         syncCurrentMessages();
@@ -293,15 +204,9 @@
     }
   }, 1000);
 
-  // Sync messages when content changes
-  const messageArea = document.querySelector('main, [class*="search"], [class*="thread"]');
-  if (messageArea) {
-    const messageObserver = new MutationObserver((mutations) => {
-      const hasNewMessages = mutations.some(m => m.type === 'childList' && m.addedNodes.length > 0);
-      if (hasNewMessages) debouncedSyncMessages();
-    });
-    messageObserver.observe(messageArea, { childList: true, subtree: true });
-  }
+  // Observe DOM changes
+  const observer = new MutationObserver(debouncedSyncConversations);
+  observer.observe(document.body, { childList: true, subtree: true });
 
   console.log('[GCCAI] Perplexity content script loaded');
 })();

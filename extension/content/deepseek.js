@@ -1,9 +1,8 @@
-// Deepseek conversation list scraper - reads from IndexedDB
+// Deepseek conversation list scraper - simplified DOM-only version
 (function() {
   'use strict';
 
   const PLATFORM = 'deepseek';
-  const DB_NAME = 'deepseek-chat';
   let knownConversationIds = new Set();
 
   function hashConversations(conversations) {
@@ -11,252 +10,199 @@
   }
   let lastConversationsHash = '';
 
-  // Read conversations from IndexedDB
-  async function readConversationsFromIndexedDB() {
-    return new Promise((resolve, reject) => {
-      const request = indexedDB.open(DB_NAME);
-      
-      request.onerror = () => {
-        console.log('[GCCAI] Deepseek: Cannot open IndexedDB');
-        resolve([]);
-      };
-      
-      request.onsuccess = (event) => {
-        const db = event.target.result;
-        const conversations = [];
-        
-        // Get all object stores
-        const storeNames = Array.from(db.objectStoreNames);
-        console.log('[GCCAI] Deepseek object stores:', storeNames);
-        
-        // Try to find conversations in various stores
-        let pending = storeNames.length;
-        
-        if (pending === 0) {
-          resolve([]);
-          return;
-        }
-        
-        storeNames.forEach(storeName => {
-          try {
-            const tx = db.transaction([storeName], 'readonly');
-            const store = tx.objectStore(storeName);
-            const request = store.getAll();
-            
-            request.onsuccess = () => {
-              const data = request.result;
-              if (Array.isArray(data)) {
-                data.forEach(item => {
-                  // Look for conversation-like objects
-                  const id = item.id || item.chat_id || item.conversation_id || item.key;
-                  const title = item.title || item.name || item.topic || '';
-                  const timestamp = item.create_time || item.update_time || item.created_at || item.updated_at || item.timestamp;
-                  
-                  if (id && title) {
-                    let lastUpdated = null;
-                    if (timestamp) {
-                      lastUpdated = typeof timestamp === 'number' 
-                        ? (timestamp < 1000000000000 ? timestamp * 1000 : timestamp)
-                        : Date.parse(timestamp);
-                    }
-                    
-                    if (!conversations.some(c => c.id === String(id))) {
-                      conversations.push({
-                        id: String(id),
-                        platform: PLATFORM,
-                        title: String(title),
-                        url: `${window.location.origin}/chat/${id}`,
-                        lastUpdated: lastUpdated || undefined
-                      });
-                    }
-                  }
-                });
-              }
-              
-              pending--;
-              if (pending === 0) {
-                console.log('[GCCAI] Deepseek found', conversations.length, 'conversations from IndexedDB');
-                resolve(conversations);
-              }
-            };
-            
-            request.onerror = () => {
-              pending--;
-              if (pending === 0) {
-                resolve(conversations);
-              }
-            };
-          } catch (e) {
-            pending--;
-            if (pending === 0) {
-              resolve(conversations);
-            }
-          }
-        });
-      };
-    });
-  }
-
-  // Also try to extract from DOM as fallback
-  function extractConversationsFromDOM() {
+  function extractConversations() {
     const conversations = [];
+    console.log('[GCCAI] Deepseek: Starting conversation extraction...');
+    console.log('[GCCAI] Deepseek: Current URL:', window.location.href);
 
-    const selectors = [
-      'a[href*="/chat/"]',
-      '[class*="chat"] a',
-      '[class*="conversation"] a',
-      '[class*="history"] a',
-      'nav a',
-      'aside a'
+    // Log all links on the page for debugging
+    const allLinks = document.querySelectorAll('a');
+    console.log('[GCCAI] Deepseek: Total links found:', allLinks.length);
+
+    // Find links that look like conversation links
+    allLinks.forEach((link, index) => {
+      const href = link.getAttribute('href') || '';
+      const text = link.textContent?.trim() || '';
+      
+      // Log potential conversation links
+      if (href.includes('/chat/') || href.includes('/conversation/') || 
+          href.length > 20 || text.length > 5) {
+        console.log(`[GCCAI] Deepseek: Link ${index}:`, { href: href.substring(0, 100), text: text.substring(0, 50) });
+      }
+    });
+
+    // Try different URL patterns
+    const patterns = [
+      { regex: /\/chat\/([a-f0-9-]+)/i, name: 'chat' },
+      { regex: /\/conversation\/([a-f0-9-]+)/i, name: 'conversation' },
+      { regex: /\/c\/([a-f0-9-]+)/i, name: 'c' }
     ];
 
-    for (const selector of selectors) {
-      const links = document.querySelectorAll(selector);
+    allLinks.forEach(link => {
+      const href = link.getAttribute('href') || '';
+      const text = link.textContent?.trim() || '';
       
-      links.forEach(link => {
-        const href = link.getAttribute('href');
-        if (!href) return;
-        
-        if (href.startsWith('http') && !href.includes('deepseek')) return;
-        
-        const chatMatch = href.match(/\/chat\/([a-f0-9-]+)/);
-        const id = chatMatch?.[1] || null;
-        const title = link.textContent?.trim() || 'Untitled';
+      if (!href || href === '/' || href === '#') return;
+      if (href.startsWith('http') && !href.includes('deepseek')) return;
+      if (text.length < 2 || text.length > 200) return;
 
-        if (id && title && title.length > 0 && title !== 'Untitled') {
+      for (const pattern of patterns) {
+        const match = href.match(pattern.regex);
+        if (match && match[1]) {
+          const id = match[1];
           if (!conversations.some(c => c.id === id)) {
-            const fullUrl = href.startsWith('http') ? href : window.location.origin + href;
+            console.log(`[GCCAI] Deepseek: Found conversation (${pattern.name}):`, { id, text: text.substring(0, 50) });
             conversations.push({
               id,
               platform: PLATFORM,
-              title,
-              url: fullUrl
+              title: text || 'Untitled',
+              url: href.startsWith('http') ? href : window.location.origin + href
             });
           }
+          break;
         }
-      });
-      
-      if (conversations.length > 0) break;
-    }
-
-    return conversations;
-  }
-
-  async function extractConversations() {
-    // Try IndexedDB first
-    const indexedDBConversations = await readConversationsFromIndexedDB();
-    
-    // Also try DOM as fallback
-    const domConversations = extractConversationsFromDOM();
-    
-    // Merge, preferring IndexedDB data
-    const allConversations = [...indexedDBConversations];
-    domConversations.forEach(domConv => {
-      if (!allConversations.some(c => c.id === domConv.id)) {
-        allConversations.push(domConv);
       }
     });
-    
-    console.log('[GCCAI] Deepseek total conversations:', allConversations.length);
-    return allConversations;
+
+    // Also try to find conversations in sidebar elements
+    const sidebarSelectors = ['nav', 'aside', '[class*="sidebar"]', '[class*="history"]', '[class*="chat-list"]'];
+    for (const selector of sidebarSelectors) {
+      const sidebar = document.querySelector(selector);
+      if (sidebar) {
+        console.log('[GCCAI] Deepseek: Found sidebar element:', selector);
+        const items = sidebar.querySelectorAll('a, [role="link"], [class*="item"]');
+        items.forEach(item => {
+          const href = item.getAttribute('href') || '';
+          const text = item.textContent?.trim() || '';
+          
+          for (const pattern of patterns) {
+            const match = href.match(pattern.regex);
+            if (match && match[1]) {
+              const id = match[1];
+              if (!conversations.some(c => c.id === id)) {
+                console.log(`[GCCAI] Deepseek: Found in sidebar:`, { id, text: text.substring(0, 50) });
+                conversations.push({
+                  id,
+                  platform: PLATFORM,
+                  title: text || 'Untitled',
+                  url: href.startsWith('http') ? href : window.location.origin + href
+                });
+              }
+              break;
+            }
+          }
+        });
+        break;
+      }
+    }
+
+    console.log('[GCCAI] Deepseek: Total conversations found:', conversations.length);
+    return conversations;
   }
 
   function extractMessages() {
     const messages = [];
+    console.log('[GCCAI] Deepseek: Extracting messages...');
 
-    const selectors = [
-      '[class*="message"]',
-      '[class*="chat-item"]',
-      '[class*="turn"]',
-      '[class*="response"]',
-      'article'
-    ];
-
-    for (const selector of selectors) {
-      const elements = document.querySelectorAll(selector);
+    // Find all text blocks that might be messages
+    const allElements = document.querySelectorAll('div, p, section, article');
+    
+    allElements.forEach(el => {
+      const text = el.textContent?.trim() || '';
+      const classList = (el.className || '').toLowerCase();
       
-      elements.forEach(el => {
-        if (el.textContent?.length < 10) return;
-        
-        const classList = (el.className || '').toLowerCase();
-        if (classList.includes('sidebar') || classList.includes('nav') || 
-            classList.includes('header') || classList.includes('footer')) {
-          return;
-        }
-        
-        let role = 'unknown';
-        if (classList.includes('user') || classList.includes('human') || classList.includes('query')) {
-          role = 'user';
-        } else if (classList.includes('assistant') || classList.includes('ai') || classList.includes('response')) {
-          role = 'assistant';
-        }
-        
-        if (role === 'unknown') {
-          role = messages.length % 2 === 0 ? 'user' : 'assistant';
-        }
-        
-        const content = el.textContent?.trim() || '';
-        if (content && content.length > 5) {
-          messages.push({
-            role,
-            content: content.substring(0, 500)
-          });
+      // Skip short text, navigation, etc
+      if (text.length < 20 || text.length > 2000) return;
+      if (classList.includes('nav') || classList.includes('sidebar') || 
+          classList.includes('header') || classList.includes('footer') ||
+          classList.includes('button')) return;
+      if (el.closest('nav') || el.closest('aside') || el.closest('header')) return;
+      
+      // Check if this might be a message
+      const isUser = classList.includes('user') || classList.includes('human') || 
+                     classList.includes('query') || classList.includes('prompt');
+      const isAssistant = classList.includes('assistant') || classList.includes('ai') || 
+                          classList.includes('response') || classList.includes('answer');
+      
+      if (isUser || isAssistant) {
+        messages.push({
+          role: isUser ? 'user' : 'assistant',
+          content: text.substring(0, 500)
+        });
+      }
+    });
+
+    // If no messages found with class detection, try alternating pattern
+    if (messages.length === 0) {
+      const textBlocks = [];
+      allElements.forEach(el => {
+        const text = el.textContent?.trim() || '';
+        if (text.length > 50 && text.length < 1000) {
+          // Check if this is a leaf element (no children or only text)
+          if (el.children.length === 0 || el.querySelector('p, span')) {
+            textBlocks.push(text);
+          }
         }
       });
       
-      if (messages.length >= 2) break;
+      for (let i = 0; i < Math.min(textBlocks.length, 4); i++) {
+        messages.push({
+          role: i % 2 === 0 ? 'user' : 'assistant',
+          content: textBlocks[i].substring(0, 500)
+        });
+      }
     }
 
+    console.log('[GCCAI] Deepseek: Messages found:', messages.length);
     return messages;
   }
 
   function getCurrentConversationId() {
     const path = window.location.pathname;
-    const chatMatch = path.match(/\/chat\/([a-f0-9-]+)/);
-    return chatMatch?.[1] || null;
+    const match = path.match(/\/(chat|conversation|c)\/([a-f0-9-]+)/);
+    return match ? match[2] : null;
   }
 
-  async function syncConversations() {
-    const conversations = await extractConversations();
+  function syncConversations() {
+    const conversations = extractConversations();
+    if (conversations.length === 0) return;
+
     const newHash = hashConversations(conversations);
+    if (newHash === lastConversationsHash) return;
 
-    if (newHash !== lastConversationsHash && conversations.length > 0) {
-      lastConversationsHash = newHash;
+    lastConversationsHash = newHash;
+    const currentIds = new Set(conversations.map(c => c.id));
+    const deletedIds = new Set([...knownConversationIds].filter(id => !currentIds.has(id)));
+    knownConversationIds = currentIds;
 
-      const currentIds = new Set(conversations.map(c => c.id));
-      const deletedIds = new Set([...knownConversationIds].filter(id => !currentIds.has(id)));
+    chrome.runtime.sendMessage({
+      type: 'UPDATE_CONVERSATIONS',
+      platform: PLATFORM,
+      conversations
+    });
 
-      knownConversationIds = currentIds;
-
+    if (deletedIds.size > 0) {
       chrome.runtime.sendMessage({
-        type: 'UPDATE_CONVERSATIONS',
+        type: 'DELETE_CONVERSATIONS',
         platform: PLATFORM,
-        conversations
+        conversationIds: Array.from(deletedIds)
       });
-
-      if (deletedIds.size > 0) {
-        chrome.runtime.sendMessage({
-          type: 'DELETE_CONVERSATIONS',
-          platform: PLATFORM,
-          conversationIds: Array.from(deletedIds)
-        });
-      }
     }
   }
 
   function syncCurrentMessages() {
     const conversationId = getCurrentConversationId();
-    if (conversationId) {
-      const messages = extractMessages();
-      if (messages.length > 0) {
-        chrome.runtime.sendMessage({
-          type: 'UPDATE_MESSAGES',
-          platform: PLATFORM,
-          conversationId,
-          messages
-        });
-      }
-    }
+    if (!conversationId) return;
+
+    const messages = extractMessages();
+    if (messages.length === 0) return;
+
+    chrome.runtime.sendMessage({
+      type: 'UPDATE_MESSAGES',
+      platform: PLATFORM,
+      conversationId,
+      messages
+    });
   }
 
   function debounce(fn, delay) {
@@ -272,43 +218,27 @@
 
   // Initial sync
   setTimeout(() => {
+    console.log('[GCCAI] Deepseek: Initial sync...');
     syncConversations();
     syncCurrentMessages();
-  }, 2000);
-
-  // Observe sidebar changes
-  const sidebar = document.querySelector('nav, [class*="sidebar"], aside');
-  if (sidebar) {
-    const observer = new MutationObserver((mutations) => {
-      const hasStructuralChanges = mutations.some(m =>
-        m.type === 'childList' && (m.addedNodes.length > 0 || m.removedNodes.length > 0)
-      );
-      if (hasStructuralChanges) debouncedSyncConversations();
-    });
-    observer.observe(sidebar, { childList: true, subtree: false });
-  }
+  }, 3000);
 
   // Sync on navigation
   let lastUrl = window.location.href;
   setInterval(() => {
     if (window.location.href !== lastUrl) {
       lastUrl = window.location.href;
+      console.log('[GCCAI] Deepseek: URL changed, syncing...');
       setTimeout(() => {
         syncConversations();
         syncCurrentMessages();
-      }, 1500);
+      }, 2000);
     }
   }, 1000);
 
-  // Sync messages when content changes
-  const messageArea = document.querySelector('main, [class*="chat"], [class*="conversation"]');
-  if (messageArea) {
-    const messageObserver = new MutationObserver((mutations) => {
-      const hasNewMessages = mutations.some(m => m.type === 'childList' && m.addedNodes.length > 0);
-      if (hasNewMessages) debouncedSyncMessages();
-    });
-    messageObserver.observe(messageArea, { childList: true, subtree: true });
-  }
+  // Observe DOM changes
+  const observer = new MutationObserver(debouncedSyncConversations);
+  observer.observe(document.body, { childList: true, subtree: true });
 
   console.log('[GCCAI] Deepseek content script loaded');
 })();
