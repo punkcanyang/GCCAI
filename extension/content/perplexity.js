@@ -78,23 +78,24 @@
     
     allElements.forEach(el => {
       const text = el.textContent?.trim() || '';
-      const classList = (el.className || '').toLowerCase();
+      const className = typeof el.className === 'string' ? el.className.toLowerCase() : '';
       
       // Skip short text, navigation, etc
       if (text.length < 20 || text.length > 2000) return;
-      if (classList.includes('nav') || classList.includes('sidebar') || 
-          classList.includes('header') || classList.includes('footer')) return;
+      if (className.includes('nav') || className.includes('sidebar') || 
+          className.includes('header') || className.includes('footer')) return;
       if (el.closest('nav') || el.closest('aside') || el.closest('header')) return;
       
       // Check if this might be a message
-      let isQuery = classList.includes('query') || classList.includes('question') || classList.includes('user') || classList.includes('prompt');
-      let isAnswer = classList.includes('answer') || classList.includes('response') || classList.includes('prose') || classList.includes('ai');
+      let isQuery = className.includes('query') || className.includes('question') || className.includes('user') || className.includes('prompt');
+      let isAnswer = className.includes('answer') || className.includes('response') || className.includes('prose') || className.includes('ai');
       
       // Structural heuristic fallbacks for Perplexity
       if (!isQuery && !isAnswer) {
-        if (classList.includes('prose') || el.querySelector('.prose, [class*="prose"]')) {
+        // Prevent grabbing huge wrapper elements by strictly looking at current attributes
+        if (className.includes('prose') || className.includes('markdown')) {
           isAnswer = true;
-        } else if (typeof el.className === 'string' && el.className.match(/\b(text-lg|text-xl|text-2xl|text-3xl|font-medium|font-semibold)\b/)) {
+        } else if (className.match(/\b(text-lg|text-xl|text-2xl|text-3xl|font-medium|font-semibold)\b/)) {
           isQuery = true;
         }
       }

@@ -110,22 +110,23 @@
     
     allElements.forEach(el => {
       const text = el.textContent?.trim() || '';
-      const classList = (el.className || '').toLowerCase();
+      const className = typeof el.className === 'string' ? el.className.toLowerCase() : '';
       
       // Skip short text, navigation, etc
       if (text.length < 20 || text.length > 2000) return;
-      if (classList.includes('nav') || classList.includes('sidebar') || 
-          classList.includes('header') || classList.includes('footer') ||
-          classList.includes('button')) return;
+      if (className.includes('nav') || className.includes('sidebar') || 
+          className.includes('header') || className.includes('footer') ||
+          className.includes('button')) return;
       if (el.closest('nav') || el.closest('aside') || el.closest('header')) return;
       
       // Check if this might be a message
-      let isUser = classList.includes('user') || classList.includes('human') || classList.includes('query') || classList.includes('prompt');
-      let isAssistant = classList.includes('assistant') || classList.includes('ai') || classList.includes('response') || classList.includes('answer');
+      let isUser = className.includes('user') || className.includes('human') || className.includes('query') || className.includes('prompt');
+      let isAssistant = className.includes('assistant') || className.includes('ai') || className.includes('response') || className.includes('answer');
       
       // Structural heuristics for DeepSeek (since classes are often obfuscated)
       if (!isUser && !isAssistant) {
-        if (classList.includes('ds-markdown') || classList.includes('markdown') || el.querySelector('.ds-markdown, .markdown, [class*="markdown"]')) {
+        // Only target the specific element, avoid using querySelector to prevent capturing top-level wrappers containing sidemenus
+        if (className.includes('ds-markdown') || className.includes('markdown')) {
           isAssistant = true;
         } else if (el.hasAttribute('dir') && el.getAttribute('dir') === 'auto') {
           isUser = true;
