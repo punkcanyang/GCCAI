@@ -166,16 +166,14 @@ async function handleDeleteConversations(platform, conversationIds) {
 
     conversationIds.forEach(id => {
       convStore.delete(id);
-      // Delete associated messages
+      // Fast path: get all primary keys to delete, avoiding cursor overhead
       const index = msgStore.index('conversationKey');
       const range = IDBKeyRange.only([platform, id]);
-      const request = index.openCursor(range);
-      request.onsuccess = (event) => {
-        const cursor = event.target.result;
-        if (cursor) {
-          msgStore.delete(cursor.primaryKey);
-          cursor.continue();
-        }
+      const keysRequest = index.getAllKeys(range);
+      
+      keysRequest.onsuccess = (event) => {
+        const keys = event.target.result || [];
+        keys.forEach(key => msgStore.delete(key));
       };
     });
 

@@ -22,7 +22,9 @@
         const clonedResponse = response.clone();
         const data = await clonedResponse.json();
         parseChatGPTResponse(data);
-      } catch (e) {}
+      } catch (e) {
+        console.error('[GCCAI] ChatGPT API intercept error:', e);
+      }
     }
     
     return response;
@@ -43,7 +45,9 @@
         try {
           const data = JSON.parse(this.responseText);
           parseChatGPTResponse(data);
-        } catch (e) {}
+        } catch (e) {
+          console.error('[GCCAI] ChatGPT XHR intercept error:', e);
+        }
       }
     });
     return originalXHRSend.apply(this, args);
@@ -137,23 +141,16 @@
       lastConversationsHash = newHash;
 
       const currentIds = new Set(conversations.map(c => c.id));
-      const deletedIds = new Set([...knownConversationIds].filter(id => !currentIds.has(id)));
-
-      knownConversationIds = currentIds;
+      // Accumulate known IDs rather than replacing them to prevent wiping virtual lists
+      currentIds.forEach(id => knownConversationIds.add(id));
 
       chrome.runtime.sendMessage({
         type: 'UPDATE_CONVERSATIONS',
         platform: PLATFORM,
         conversations
       });
-
-      if (deletedIds.size > 0) {
-        chrome.runtime.sendMessage({
-          type: 'DELETE_CONVERSATIONS',
-          platform: PLATFORM,
-          conversationIds: Array.from(deletedIds)
-        });
-      }
+      
+      // Disabled auto-delete: Virtual DOM removes records from viewport, triggering false deletions otherwise.
     }
   }
 

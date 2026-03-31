@@ -33,9 +33,9 @@
 
     // Try different URL patterns
     const patterns = [
-      { regex: /\/search\/([a-f0-9-]+)/i, name: 'search' },
-      { regex: /\/thread\/([a-f0-9-]+)/i, name: 'thread' },
-      { regex: /\/c\/([a-f0-9-]+)/i, name: 'c' },
+      { regex: /\/search\/([a-zA-Z0-9-_]+)/i, name: 'search' },
+      { regex: /\/thread\/([a-zA-Z0-9-_]+)/i, name: 'thread' },
+      { regex: /\/c\/([a-zA-Z0-9-_]+)/i, name: 'c' },
       { regex: /\/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/i, name: 'uuid' }
     ];
 
@@ -87,16 +87,26 @@
       if (el.closest('nav') || el.closest('aside') || el.closest('header')) return;
       
       // Check if this might be a message
-      const isQuery = classList.includes('query') || classList.includes('question') || 
-                      classList.includes('user') || classList.includes('prompt');
-      const isAnswer = classList.includes('answer') || classList.includes('response') || 
-                       classList.includes('prose') || classList.includes('ai');
+      let isQuery = classList.includes('query') || classList.includes('question') || classList.includes('user') || classList.includes('prompt');
+      let isAnswer = classList.includes('answer') || classList.includes('response') || classList.includes('prose') || classList.includes('ai');
+      
+      // Structural heuristic fallbacks for Perplexity
+      if (!isQuery && !isAnswer) {
+        if (classList.includes('prose') || el.querySelector('.prose, [class*="prose"]')) {
+          isAnswer = true;
+        } else if (typeof el.className === 'string' && el.className.match(/\b(text-lg|text-xl|text-2xl|text-3xl|font-medium|font-semibold)\b/)) {
+          isQuery = true;
+        }
+      }
       
       if (isQuery || isAnswer) {
-        messages.push({
-          role: isQuery ? 'user' : 'assistant',
-          content: text.substring(0, 500)
-        });
+        const truncatedContent = text.substring(0, 500);
+        if (!messages.some(m => m.content === truncatedContent)) {
+          messages.push({
+            role: isQuery ? 'user' : 'assistant',
+            content: truncatedContent
+          });
+        }
       }
     });
 
@@ -126,51 +136,53 @@
 
   function getCurrentConversationId() {
     const path = window.location.pathname;
-    const match = path.match(/\/(search|thread|c)\/([a-f0-9-]+)/) ||
+    const match = path.match(/\/(search|thread|c)\/([a-zA-Z0-9-_]+)/) ||
                   path.match(/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/);
     return match ? (match[2] || match[1]) : null;
   }
 
   function syncConversations() {
-    const conversations = extractConversations();
-    if (conversations.length === 0) return;
+    try {
+      const conversations = extractConversations();
+      if (conversations.length === 0) return;
 
-    const newHash = hashConversations(conversations);
-    if (newHash === lastConversationsHash) return;
+      const newHash = hashConversations(conversations);
+      if (newHash === lastConversationsHash) return;
 
-    lastConversationsHash = newHash;
-    const currentIds = new Set(conversations.map(c => c.id));
-    const deletedIds = new Set([...knownConversationIds].filter(id => !currentIds.has(id)));
-    knownConversationIds = currentIds;
+      lastConversationsHash = newHash;
+      const currentIds = new Set(conversations.map(c => c.id));
+      // Accumulate known IDs rather than replacing them to prevent wiping virtual lists
+      currentIds.forEach(id => knownConversationIds.add(id));
 
-    chrome.runtime.sendMessage({
-      type: 'UPDATE_CONVERSATIONS',
-      platform: PLATFORM,
-      conversations
-    });
-
-    if (deletedIds.size > 0) {
       chrome.runtime.sendMessage({
-        type: 'DELETE_CONVERSATIONS',
+        type: 'UPDATE_CONVERSATIONS',
         platform: PLATFORM,
-        conversationIds: Array.from(deletedIds)
+        conversations
       });
+      
+      // Disabled auto-delete: Virtual DOM removes records from viewport, triggering false deletions otherwise.
+    } catch (e) {
+      console.error('[GCCAI] Perplexity syncConversations error:', e);
     }
   }
 
   function syncCurrentMessages() {
-    const conversationId = getCurrentConversationId();
-    if (!conversationId) return;
+    try {
+      const conversationId = getCurrentConversationId();
+      if (!conversationId) return;
 
-    const messages = extractMessages();
-    if (messages.length === 0) return;
+      const messages = extractMessages();
+      if (messages.length === 0) return;
 
-    chrome.runtime.sendMessage({
-      type: 'UPDATE_MESSAGES',
-      platform: PLATFORM,
-      conversationId,
-      messages
-    });
+      chrome.runtime.sendMessage({
+        type: 'UPDATE_MESSAGES',
+        platform: PLATFORM,
+        conversationId,
+        messages
+      });
+    } catch (e) {
+      console.error('[GCCAI] Perplexity syncCurrentMessages error:', e);
+    }
   }
 
   function debounce(fn, delay) {
@@ -210,3 +222,17 @@
 
   console.log('[GCCAI] Perplexity content script loaded');
 })();
+
+/*
+[For Future AI]
+1.  Key assumptions made: 
+    - Assuming Perplexity URL conforms to `/\/search\/([a-zA-Z0-9-_]+)/` or generic UUID structure.
+    - Assuming AI prose chunks are contained in elements with `class` containing `prose`.
+    - Assuming User queries use generic specific font Tailwind classes `text-xl|text-2xl|font-medium|...`.
+2.  Potential edge cases to watch: 
+    - Tailwind classes for User queries might change to `text-base` or something else or be completely obfuscated if Perplexity moves off standard Tailwind.
+    - UUID logic might fail if Perplexity decides to use Base64 URL Safe encoding containing extra symbols.
+    - `extractMessages` relies on simple content deduplication. Short duplicate messages ("yes") will only be captured once per run.
+3.  Dependencies on other modules: 
+    - Relies on event dispatch via `chrome.runtime.sendMessage` handled by `background.js`.
+*/

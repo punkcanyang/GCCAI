@@ -147,10 +147,12 @@ async function updateConversationLastUpdated(platform, conversationId, timestamp
 }
 
 // Sync conversations with deletion detection
+// Sync conversations with deletion detection
 // Call this when you're confident the list is complete
 async function syncConversationsWithDeletion(platform, conversations) {
-  return transaction('conversations', 'readwrite', async (stores) => {
+  return transaction(['conversations', 'messages'], 'readwrite', async (stores) => {
     const store = stores.conversations;
+    const msgStore = stores.messages;
     const index = store.index('platform');
     const request = index.getAll(platform);
 
@@ -162,30 +164,39 @@ async function syncConversationsWithDeletion(platform, conversations) {
     const existingIds = new Set(existing.map(c => c.id));
     const newIds = new Set(conversations.map(c => c.id));
 
-    // Only delete if we have a substantial list (not partial load)
-    const isSubstantialList = conversations.length >= 5;
+    // Diff on any non-empty scraping result
+    const isSubstantialList = conversations.length > 0;
     
     if (isSubstantialList) {
       // Delete conversations that no longer exist
       for (const conv of existing) {
         if (!newIds.has(conv.id)) {
           store.delete(conv.id);
-          // Also delete associated messages
-          await deleteMessagesForConversation(platform, conv.id);
+          // Also delete associated messages inside same transaction without nested global transactions
+          const msgIndex = msgStore.index('conversationKey');
+          const range = IDBKeyRange.only([platform, conv.id]);
+          const cursorRequest = msgIndex.openCursor(range);
+          cursorRequest.onsuccess = (event) => {
+            const cursor = event.target.result;
+            if (cursor) {
+              msgStore.delete(cursor.primaryKey);
+              cursor.continue();
+            }
+          };
         }
       }
     }
 
     // Add or update conversations
     for (const conv of conversations) {
-      const existing = await new Promise((resolve, reject) => {
+      const existingRecord = await new Promise((resolve, reject) => {
         const getRequest = store.get(conv.id);
         getRequest.onsuccess = () => resolve(getRequest.result);
         getRequest.onerror = () => reject(getRequest.error);
       });
       
       store.put({
-        ...(existing || {}),
+        ...(existingRecord || {}),
         ...conv,
         platform,
         lastSynced: Date.now()

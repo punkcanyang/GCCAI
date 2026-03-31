@@ -62,7 +62,7 @@
   // Load previews for all platforms
   async function loadPreviews() {
     const platforms = ['chatgpt', 'claude', 'gemini', 'grok', 'perplexity', 'deepseek'];
-    for (const platform of platforms) {
+    await Promise.allSettled(platforms.map(async (platform) => {
       try {
         const previews = await chrome.runtime.sendMessage({
           type: 'GET_CONVERSATION_PREVIEWS',
@@ -70,9 +70,9 @@
         });
         conversationPreviews[platform] = previews || {};
       } catch (e) {
-        console.error(`Failed to load previews for ${platform}:`, e);
+        console.error(`[GCCAI] Failed to load previews for ${platform}:`, e);
       }
-    }
+    }));
   }
 
   // Load messages for a conversation

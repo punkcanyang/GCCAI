@@ -33,9 +33,10 @@
 
     // Try different URL patterns
     const patterns = [
-      { regex: /\/chat\/([a-f0-9-]+)/i, name: 'chat' },
-      { regex: /\/conversation\/([a-f0-9-]+)/i, name: 'conversation' },
-      { regex: /\/c\/([a-f0-9-]+)/i, name: 'c' }
+      { regex: /\/chat\/([a-zA-Z0-9-_]+)/i, name: 'chat' },
+      { regex: /\/conversation\/([a-zA-Z0-9-_]+)/i, name: 'conversation' },
+      { regex: /\/c\/([a-zA-Z0-9-_]+)/i, name: 'c' },
+      { regex: /\/s\/([a-zA-Z0-9-_]+)/i, name: 's' }
     ];
 
     allLinks.forEach(link => {
@@ -119,16 +120,27 @@
       if (el.closest('nav') || el.closest('aside') || el.closest('header')) return;
       
       // Check if this might be a message
-      const isUser = classList.includes('user') || classList.includes('human') || 
-                     classList.includes('query') || classList.includes('prompt');
-      const isAssistant = classList.includes('assistant') || classList.includes('ai') || 
-                          classList.includes('response') || classList.includes('answer');
+      let isUser = classList.includes('user') || classList.includes('human') || classList.includes('query') || classList.includes('prompt');
+      let isAssistant = classList.includes('assistant') || classList.includes('ai') || classList.includes('response') || classList.includes('answer');
+      
+      // Structural heuristics for DeepSeek (since classes are often obfuscated)
+      if (!isUser && !isAssistant) {
+        if (classList.includes('ds-markdown') || classList.includes('markdown') || el.querySelector('.ds-markdown, .markdown, [class*="markdown"]')) {
+          isAssistant = true;
+        } else if (el.hasAttribute('dir') && el.getAttribute('dir') === 'auto') {
+          isUser = true;
+        }
+      }
       
       if (isUser || isAssistant) {
-        messages.push({
-          role: isUser ? 'user' : 'assistant',
-          content: text.substring(0, 500)
-        });
+        const truncatedContent = text.substring(0, 500);
+        // Deduplicate messages with exact same content prefix
+        if (!messages.some(m => m.content === truncatedContent)) {
+          messages.push({
+            role: isUser ? 'user' : 'assistant',
+            content: truncatedContent
+          });
+        }
       }
     });
 
@@ -159,50 +171,52 @@
 
   function getCurrentConversationId() {
     const path = window.location.pathname;
-    const match = path.match(/\/(chat|conversation|c)\/([a-f0-9-]+)/);
+    const match = path.match(/\/(chat|conversation|c|s)\/([a-zA-Z0-9-_]+)/);
     return match ? match[2] : null;
   }
 
   function syncConversations() {
-    const conversations = extractConversations();
-    if (conversations.length === 0) return;
+    try {
+      const conversations = extractConversations();
+      if (conversations.length === 0) return;
 
-    const newHash = hashConversations(conversations);
-    if (newHash === lastConversationsHash) return;
+      const newHash = hashConversations(conversations);
+      if (newHash === lastConversationsHash) return;
 
-    lastConversationsHash = newHash;
-    const currentIds = new Set(conversations.map(c => c.id));
-    const deletedIds = new Set([...knownConversationIds].filter(id => !currentIds.has(id)));
-    knownConversationIds = currentIds;
+      lastConversationsHash = newHash;
+      const currentIds = new Set(conversations.map(c => c.id));
+      // Accumulate known IDs rather than replacing them to prevent wiping virtual lists
+      currentIds.forEach(id => knownConversationIds.add(id));
 
-    chrome.runtime.sendMessage({
-      type: 'UPDATE_CONVERSATIONS',
-      platform: PLATFORM,
-      conversations
-    });
-
-    if (deletedIds.size > 0) {
       chrome.runtime.sendMessage({
-        type: 'DELETE_CONVERSATIONS',
+        type: 'UPDATE_CONVERSATIONS',
         platform: PLATFORM,
-        conversationIds: Array.from(deletedIds)
+        conversations
       });
+      
+      // Disabled auto-delete: Virtual DOM removes records from viewport, triggering false deletions otherwise.
+    } catch (e) {
+      console.error('[GCCAI] Deepseek syncConversations error:', e);
     }
   }
 
   function syncCurrentMessages() {
-    const conversationId = getCurrentConversationId();
-    if (!conversationId) return;
+    try {
+      const conversationId = getCurrentConversationId();
+      if (!conversationId) return;
 
-    const messages = extractMessages();
-    if (messages.length === 0) return;
+      const messages = extractMessages();
+      if (messages.length === 0) return;
 
-    chrome.runtime.sendMessage({
-      type: 'UPDATE_MESSAGES',
-      platform: PLATFORM,
-      conversationId,
-      messages
-    });
+      chrome.runtime.sendMessage({
+        type: 'UPDATE_MESSAGES',
+        platform: PLATFORM,
+        conversationId,
+        messages
+      });
+    } catch (e) {
+      console.error('[GCCAI] Deepseek syncCurrentMessages error:', e);
+    }
   }
 
   function debounce(fn, delay) {
@@ -230,11 +244,12 @@
       lastUrl = window.location.href;
       console.log('[GCCAI] Deepseek: URL changed, syncing...');
       setTimeout(() => {
-        syncConversations();
         syncCurrentMessages();
       }, 2000);
     }
-  }, 1000);
+    // DeepSeek uses virtual lists which disappear off-screen. We must periodically sync what enters the screen.
+    syncConversations();
+  }, 1500);
 
   // Observe DOM changes
   const observer = new MutationObserver(debouncedSyncConversations);
@@ -242,3 +257,17 @@
 
   console.log('[GCCAI] Deepseek content script loaded');
 })();
+
+/*
+[For Future AI]
+1.  Key assumptions made: 
+    - Assuming DeepSeek chat URLs conform to `/\/([a-zA-Z0-9-_]+)$/` patterns like `/chat/s/ab12cd...`.
+    - Assuming messages match `.ds-markdown` for AI responses, or `dir="auto"` / text leaves for User prompts.
+    - Assumes the user wants identical messages deduplicated by exact match of the first 500 characters.
+2.  Potential edge cases to watch: 
+    - DeepSeek may change `.ds-markdown` to completely generic hashes. In that case, we need to inspect inline styles or node depth logic.
+    - DeepSeek's SSR/SPA routing may swallow `window.location.href` mutation events; keep the `setInterval` robust.
+    - If user messages start having `.ds-markdown` class, the scraper will think they are AI. 
+3.  Dependencies on other modules: 
+    - Depends on `chrome.runtime.sendMessage` communicating with `background.js` and adhering to `UPDATE_CONVERSATIONS` & `UPDATE_MESSAGES` typings.
+*/
