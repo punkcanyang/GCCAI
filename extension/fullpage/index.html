@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GCCAI - 全视窗模式</title>
+  <link rel="stylesheet" href="index.css">
+</head>
+<body>
+  <div id="app">
+    <header>
+      <div class="header-left">
+        <h1>GCCAI</h1>
+        <span class="mode-badge">全视窗</span>
+      </div>
+      <div class="header-center">
+        <div id="search-container">
+          <input type="text" id="search" placeholder="搜索对话标题或内容...">
+          <button id="search-btn">搜索</button>
+        </div>
+        <div id="search-type-toggle">
+          <button id="search-titles" class="active">标题</button>
+          <button id="search-content">全文</button>
+        </div>
+      </div>
+      <div class="header-right">
+        <button id="clear-cache-btn" title="清除缓存">🗑️ 清除缓存</button>
+        <button id="open-sidepanel">切换到 Side Panel</button>
+      </div>
+    </header>
+    <main>
+      <aside id="sidebar">
+        <div id="folder-section">
+          <div id="folder-header">
+            <span>文件夹</span>
+            <button id="add-folder-btn" title="新建文件夹">+</button>
+          </div>
+          <div id="folder-list">
+            <div class="folder-item active" data-folder-id="all">
+              <span class="folder-icon">📁</span>
+              <span class="folder-name">全部对话</span>
+            </div>
+          </div>
+        </div>
+        <div id="platform-filters">
+          <button class="platform-filter active" data-platform="all">全部</button>
+          <button class="platform-filter" data-platform="chatgpt">ChatGPT</button>
+          <button class="platform-filter" data-platform="claude">Claude</button>
+          <button class="platform-filter" data-platform="gemini">Gemini</button>
+          <button class="platform-filter" data-platform="grok">Grok</button>
+          <button class="platform-filter" data-platform="perplexity">Perplexity</button>
+          <button class="platform-filter" data-platform="deepseek">Deepseek</button>
+        </div>
+        <div id="conversation-list" data-folder-id="all"></div>
+      </aside>
+      <section id="content">
+        <div id="preview-panel" class="hidden">
+          <div id="preview-header">
+            <h2 id="preview-title"></h2>
+            <div class="preview-actions">
+              <button id="move-to-folder-btn" title="移动到文件夹">📁</button>
+              <button id="open-link-btn">在原网站打开 ↗</button>
+            </div>
+          </div>
+          <div id="preview-messages"></div>
+        </div>
+        <div id="welcome-panel">
+          <div class="welcome-content">
+            <h2>欢迎使用 GCCAI</h2>
+            <p>选择一个对话查看预览</p>
+            <div class="stats" id="stats"></div>
+          </div>
+        </div>
+      </section>
+    </main>
+    <div id="search-results" class="hidden">
+      <div id="search-results-header">
+        <h3>搜索结果 <span id="search-count"></span></h3>
+        <button id="close-search">✕ 关闭</button>
+      </div>
+      <div id="search-results-list"></div>
+    </div>
+    <div id="folder-modal" class="hidden">
+      <div class="modal-content">
+        <h3 id="folder-modal-title">新建文件夹</h3>
+        <input type="text" id="folder-name-input" placeholder="文件夹名称">
+        <div class="modal-actions">
+          <button id="folder-modal-cancel">取消</button>
+          <button id="folder-modal-confirm">确定</button>
+        </div>
+      </div>
+    </div>
+    <div id="move-to-folder-modal" class="hidden">
+      <div class="modal-content">
+        <h3>移动到文件夹</h3>
+        <div id="move-folder-list"></div>
+        <div class="modal-actions">
+          <button id="move-modal-cancel">取消</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script src="index.js"></script>
+</body>
+</html>

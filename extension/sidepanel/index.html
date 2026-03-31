@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GCCAI</title>
+  <link rel="stylesheet" href="index.css">
+</head>
+<body>
+  <div id="app">
+    <header>
+      <div class="header-top">
+        <h1>GCCAI</h1>
+        <div class="header-actions">
+          <button id="clear-cache-btn" title="清除缓存">🗑️</button>
+          <button id="open-fullpage" title="全视窗模式">⛶</button>
+        </div>
+      </div>
+      <div id="search-container">
+        <input type="text" id="search" placeholder="搜索对话标题或内容...">
+        <button id="search-btn">搜</button>
+      </div>
+      <div id="search-type-toggle">
+        <button id="search-titles" class="active">标题</button>
+        <button id="search-content">全文</button>
+      </div>
+    </header>
+    <div id="main-container">
+      <aside id="conversation-list"></aside>
+      <main id="preview-panel" class="hidden">
+        <div id="preview-header">
+          <button id="back-btn" class="hidden">← 返回</button>
+          <h2 id="preview-title"></h2>
+          <button id="open-link-btn" class="hidden">打开 ↗</button>
+        </div>
+        <div id="preview-messages"></div>
+      </main>
+    </div>
+    <div id="search-results" class="hidden">
+      <div id="search-results-header">
+        <h3>搜索结果</h3>
+        <button id="close-search">✕</button>
+      </div>
+      <div id="search-results-list"></div>
+    </div>
+  </div>
+  <script src="index.js"></script>
+</body>
+</html>
