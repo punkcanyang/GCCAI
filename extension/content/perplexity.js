@@ -1,14 +1,50 @@
-// Perplexity conversation list scraper - simplified DOM-only version
+// Perplexity conversation list scraper with API interception
 (function() {
   'use strict';
 
   const PLATFORM = 'perplexity';
   let knownConversationIds = new Set();
+  let conversationTimestamps = new Map();
 
   function hashConversations(conversations) {
     return conversations.map(c => c.id).join(',');
   }
   let lastConversationsHash = '';
+
+  // Intercept fetch to capture timestamps from /rest/thread/{slug}.
+  // Response structure: { thread_metadata: { created_at, updated_at }, ... }
+  // The slug matches the ID extracted from /search/{slug} or /thread/{slug} URLs.
+  const originalFetch = window.fetch;
+  window.fetch = async function(...args) {
+    const response = await originalFetch.apply(this, args);
+
+    const url = typeof args[0] === 'string' ? args[0] : args[0]?.url;
+    if (url && url.includes('/rest/thread/') && !url.includes('/mark_viewed')) {
+      try {
+        const clonedResponse = response.clone();
+        const data = await clonedResponse.json();
+        if (data?.thread_metadata) {
+          // Extract slug from URL: /rest/thread/{slug}?...
+          const slugMatch = url.match(/\/rest\/thread\/([^/?]+)/);
+          if (slugMatch) {
+            const slug = slugMatch[1];
+            const raw = data.thread_metadata.updated_at || data.thread_metadata.created_at;
+            if (raw) {
+              const ts = Date.parse(raw);
+              if (ts > 1600000000000) {
+                conversationTimestamps.set(slug, ts);
+                console.log('[GCCAI] Perplexity timestamp for', slug, ':', new Date(ts).toISOString());
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.error('[GCCAI] Perplexity API intercept error:', e);
+      }
+    }
+
+    return response;
+  };
 
   function extractConversations() {
     const conversations = [];
@@ -53,12 +89,15 @@
           const id = match[1];
           if (!conversations.some(c => c.id === id)) {
             console.log(`[GCCAI] Perplexity: Found conversation (${pattern.name}):`, { id, text: text.substring(0, 50) });
-            conversations.push({
+            const conv = {
               id,
               platform: PLATFORM,
               title: text || 'Untitled',
               url: href.startsWith('http') ? href : window.location.origin + href
-            });
+            };
+            const ts = conversationTimestamps.get(id);
+            if (ts) conv.lastUpdated = ts;
+            conversations.push(conv);
           }
           break;
         }

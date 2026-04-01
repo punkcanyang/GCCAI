@@ -10,92 +10,55 @@
   }
   let lastConversationsHash = '';
 
+  // Convert DeepSeek group label to an ISO date string (best approximation)
+  // Labels: "30 天内" → today's date, "2025-12" → "2025-12-01", etc.
+  function groupLabelToDate(label) {
+    if (!label) return null;
+    const monthMatch = label.match(/^(\d{4})-(\d{2})$/);
+    if (monthMatch) {
+      return `${monthMatch[1]}-${monthMatch[2]}-01`;
+    }
+    // "30 天内" or any other recent label → use today
+    if (/天内|今天|yesterday|recent/i.test(label)) {
+      return new Date().toISOString().slice(0, 10);
+    }
+    return null;
+  }
+
   function extractConversations() {
     const conversations = [];
     console.log('[GCCAI] Deepseek: Starting conversation extraction...');
-    console.log('[GCCAI] Deepseek: Current URL:', window.location.href);
 
-    // Log all links on the page for debugging
-    const allLinks = document.querySelectorAll('a');
-    console.log('[GCCAI] Deepseek: Total links found:', allLinks.length);
+    // DeepSeek URL pattern: /a/chat/s/{UUID}
+    // Sidebar structure: ._3098d02 > .f3d18f6a (group label) + a[href^="/a/chat/s/"]
+    const links = document.querySelectorAll('a[href^="/a/chat/s/"]');
+    console.log('[GCCAI] Deepseek: Chat links found:', links.length);
 
-    // Find links that look like conversation links
-    allLinks.forEach((link, index) => {
+    links.forEach(link => {
       const href = link.getAttribute('href') || '';
-      const text = link.textContent?.trim() || '';
-      
-      // Log potential conversation links
-      if (href.includes('/chat/') || href.includes('/conversation/') || 
-          href.length > 20 || text.length > 5) {
-        console.log(`[GCCAI] Deepseek: Link ${index}:`, { href: href.substring(0, 100), text: text.substring(0, 50) });
-      }
+      const match = href.match(/\/a\/chat\/s\/([a-zA-Z0-9-_]+)/);
+      if (!match) return;
+
+      const id = match[1];
+      if (conversations.some(c => c.id === id)) return;
+
+      const title = link.textContent?.trim() || 'Untitled';
+      if (title.length < 1 || title.length > 200) return;
+
+      // Get the month/year group label from the nearest ._3098d02 ancestor
+      const groupLabel = link.closest('._3098d02')?.querySelector('.f3d18f6a')?.textContent?.trim() || null;
+      const lastUpdated = groupLabelToDate(groupLabel);
+
+      console.log('[GCCAI] Deepseek: Found conversation:', { id, title: title.substring(0, 50), groupLabel, lastUpdated });
+      const conv = {
+        id,
+        platform: PLATFORM,
+        title,
+        url: window.location.origin + href,
+      };
+      if (lastUpdated) conv.lastUpdated = Date.parse(lastUpdated) || undefined;
+      conversations.push(conv);
     });
-
-    // Try different URL patterns
-    const patterns = [
-      { regex: /\/chat\/([a-zA-Z0-9-_]+)/i, name: 'chat' },
-      { regex: /\/conversation\/([a-zA-Z0-9-_]+)/i, name: 'conversation' },
-      { regex: /\/c\/([a-zA-Z0-9-_]+)/i, name: 'c' },
-      { regex: /\/s\/([a-zA-Z0-9-_]+)/i, name: 's' }
-    ];
-
-    allLinks.forEach(link => {
-      const href = link.getAttribute('href') || '';
-      const text = link.textContent?.trim() || '';
-      
-      if (!href || href === '/' || href === '#') return;
-      if (href.startsWith('http') && !href.includes('deepseek')) return;
-      if (text.length < 2 || text.length > 200) return;
-
-      for (const pattern of patterns) {
-        const match = href.match(pattern.regex);
-        if (match && match[1]) {
-          const id = match[1];
-          if (!conversations.some(c => c.id === id)) {
-            console.log(`[GCCAI] Deepseek: Found conversation (${pattern.name}):`, { id, text: text.substring(0, 50) });
-            conversations.push({
-              id,
-              platform: PLATFORM,
-              title: text || 'Untitled',
-              url: href.startsWith('http') ? href : window.location.origin + href
-            });
-          }
-          break;
-        }
-      }
-    });
-
-    // Also try to find conversations in sidebar elements
-    const sidebarSelectors = ['nav', 'aside', '[class*="sidebar"]', '[class*="history"]', '[class*="chat-list"]'];
-    for (const selector of sidebarSelectors) {
-      const sidebar = document.querySelector(selector);
-      if (sidebar) {
-        console.log('[GCCAI] Deepseek: Found sidebar element:', selector);
-        const items = sidebar.querySelectorAll('a, [role="link"], [class*="item"]');
-        items.forEach(item => {
-          const href = item.getAttribute('href') || '';
-          const text = item.textContent?.trim() || '';
-          
-          for (const pattern of patterns) {
-            const match = href.match(pattern.regex);
-            if (match && match[1]) {
-              const id = match[1];
-              if (!conversations.some(c => c.id === id)) {
-                console.log(`[GCCAI] Deepseek: Found in sidebar:`, { id, text: text.substring(0, 50) });
-                conversations.push({
-                  id,
-                  platform: PLATFORM,
-                  title: text || 'Untitled',
-                  url: href.startsWith('http') ? href : window.location.origin + href
-                });
-              }
-              break;
-            }
-          }
-        });
-        break;
-      }
-    }
 
     console.log('[GCCAI] Deepseek: Total conversations found:', conversations.length);
     return conversations;
@@ -105,20 +68,18 @@
     const messages = [];
     console.log('[GCCAI] Deepseek: Extracting messages...');
 
-    // Primary: Target DeepSeek's known DOM markers directly
-    // .ds-markdown is the stable class for AI rendered responses
+    // AI responses: .ds-markdown (exclude nested / nav elements)
     const mdEls = Array.from(document.querySelectorAll('.ds-markdown'))
       .filter(el => !el.closest('nav, aside, header') && !el.parentElement?.closest('.ds-markdown'));
 
     if (mdEls.length > 0) {
-      // Find chat container: lowest common ancestor of all .ds-markdown elements
+      // Find lowest common ancestor of all .ds-markdown elements
       let chatContainer = mdEls[0].parentElement;
       for (let i = 1; i < mdEls.length; i++) {
         while (chatContainer && !chatContainer.contains(mdEls[i])) {
           chatContainer = chatContainer.parentElement;
         }
       }
-      // For single-message conversations, walk up a few levels to capture user message
       if (mdEls.length === 1 && chatContainer) {
         for (let i = 0; i < 3 && chatContainer.parentElement && chatContainer.parentElement !== document.body; i++) {
           chatContainer = chatContainer.parentElement;
@@ -126,12 +87,9 @@
       }
 
       if (chatContainer && chatContainer !== document.body) {
-        // User messages: [dir="auto"] within chat container, not inside .ds-markdown
-        const userEls = Array.from(chatContainer.querySelectorAll('[dir="auto"]'))
+        // User messages: .d29f3d7d.ds-message > .fbb737a4 (direct text container, no [dir="auto"])
+        const userEls = Array.from(chatContainer.querySelectorAll('.d29f3d7d.ds-message .fbb737a4'))
           .filter(el => {
-            if (el.closest('.ds-markdown')) return false;
-            if (el.querySelector('.ds-markdown')) return false;
-            if (el.querySelector('[dir="auto"]')) return false;
             const text = el.textContent?.trim() || '';
             return text.length >= 2;
           });
@@ -147,7 +105,6 @@
           return 0;
         });
 
-        // Deduplicate by content prefix and collect
         const seen = new Set();
         candidates.forEach(({ el, role }) => {
           const text = el.textContent?.trim() || '';
@@ -160,7 +117,7 @@
       }
     }
 
-    // Fallback: generic heuristic if targeted approach found nothing
+    // Fallback if nothing found
     if (messages.length === 0) {
       const allElements = document.querySelectorAll('div, p, section, article');
       const textBlocks = [];
@@ -172,7 +129,6 @@
           }
         }
       });
-
       for (let i = 0; i < Math.min(textBlocks.length, 4); i++) {
         messages.push({
           role: i % 2 === 0 ? 'user' : 'assistant',
@@ -186,9 +142,9 @@
   }
 
   function getCurrentConversationId() {
-    const path = window.location.pathname;
-    const match = path.match(/\/(chat|conversation|c|s)\/([a-zA-Z0-9-_]+)/);
-    return match ? match[2] : null;
+    // DeepSeek URL: /a/chat/s/{UUID}
+    const match = window.location.pathname.match(/\/a\/chat\/s\/([a-zA-Z0-9-_]+)/);
+    return match ? match[1] : null;
   }
 
   function syncConversations() {
@@ -201,7 +157,6 @@
 
       lastConversationsHash = newHash;
       const currentIds = new Set(conversations.map(c => c.id));
-      // Accumulate known IDs rather than replacing them to prevent wiping virtual lists
       currentIds.forEach(id => knownConversationIds.add(id));
 
       chrome.runtime.sendMessage({
@@ -209,8 +164,6 @@
         platform: PLATFORM,
         conversations
       });
-      
-      // Disabled auto-delete: Virtual DOM removes records from viewport, triggering false deletions otherwise.
     } catch (e) {
       console.error('[GCCAI] Deepseek syncConversations error:', e);
     }
@@ -253,7 +206,7 @@
     syncCurrentMessages();
   }, 3000);
 
-  // Sync on navigation
+  // Sync on navigation and virtual list updates
   let lastUrl = window.location.href;
   setInterval(() => {
     if (window.location.href !== lastUrl) {
@@ -263,7 +216,6 @@
         syncCurrentMessages();
       }, 2000);
     }
-    // DeepSeek uses virtual lists which disappear off-screen. We must periodically sync what enters the screen.
     syncConversations();
   }, 1500);
 
@@ -277,15 +229,15 @@
 /*
 [For Future AI]
 1.  Key assumptions made:
-    - Assuming DeepSeek chat URLs conform to `/\/([a-zA-Z0-9-_]+)$/` patterns like `/chat/s/ab12cd...`.
-    - AI responses are identified by `.ds-markdown` class (targeted querySelectorAll, not broad iteration).
-    - User messages are identified by `[dir="auto"]` scoped within the chat container (LCA of .ds-markdown elements) to avoid sidebar false positives.
-    - Deduplication uses first 200 chars of text as key.
-2.  Potential edge cases to watch:
-    - DeepSeek may change `.ds-markdown` to completely generic hashes. In that case, the fallback heuristic kicks in.
-    - Single-message conversations: chat container is found by walking up 3 levels from the .ds-markdown parent.
-    - `[dir="auto"]` within the chat container could still match non-message elements (e.g., thinking blocks). Filter by `!el.querySelector('[dir="auto"]')` takes the deepest match only.
-    - DeepSeek's SSR/SPA routing may swallow `window.location.href` mutation events; keep the `setInterval` robust.
-3.  Dependencies on other modules:
-    - Depends on `chrome.runtime.sendMessage` communicating with `background.js` and adhering to `UPDATE_CONVERSATIONS` & `UPDATE_MESSAGES` typings.
+    - DeepSeek chat URLs follow the pattern `/a/chat/s/{UUID}`.
+    - AI responses are identified by `.ds-markdown` (stable class).
+    - User messages are identified by `.d29f3d7d.ds-message .fbb737a4` — DeepSeek does NOT use [dir="auto"] on user messages; text is a direct text node inside .fbb737a4.
+    - Conversation time is sourced from the sidebar group label (.f3d18f6a inside ._3098d02). Labels are "30 天内" (within 30 days → today's date) or "YYYY-MM" (→ first day of that month). No per-conversation precise timestamp is exposed in the DOM.
+    - Sidebar structure: a[href^="/a/chat/s/"] links inside ._3098d02 groups, each group has a .f3d18f6a label.
+2.  Potential edge cases:
+    - DeepSeek may rename hashed class names (.d29f3d7d, .fbb737a4, ._3098d02, .f3d18f6a). If parsing breaks, check these selectors first.
+    - Virtual list: only visible items are in the DOM. The setInterval keeps scanning as the user scrolls.
+    - Single-message conversations: chat container walked up 3 levels from .ds-markdown parent.
+3.  Dependencies:
+    - Depends on chrome.runtime.sendMessage → background.js → UPDATE_CONVERSATIONS / UPDATE_MESSAGES typings.
 */

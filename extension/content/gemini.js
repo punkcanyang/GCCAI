@@ -11,44 +11,47 @@
   }
   let lastConversationsHash = '';
 
-  // Intercept fetch requests to capture conversation timestamps
+  // Intercept fetch requests to capture conversation timestamps from qpEbW RPC.
+  // qpEbW fires on every conversation load. Response structure:
+  //   [[[entry, ...], convId]]
+  //   entry = [[type], flag, status, [unix_sec, nanosec], count1, count2]
+  // The conv ID in the response matches the hex ID in the page URL (/app/{id}).
   const originalFetch = window.fetch;
   window.fetch = async function(...args) {
     const response = await originalFetch.apply(this, args);
-    
-    // Check if this is a batchexecute request
+
     const url = typeof args[0] === 'string' ? args[0] : args[0]?.url;
     if (url && url.includes('batchexecute')) {
       try {
-        // Clone response to read it without consuming
-        const clonedResponse = response.clone();
-        const text = await clonedResponse.text();
-        
-        // Parse the response to extract conversation IDs and timestamps
-        parseGeminiResponse(text, url);
+        const rpc = (url.match(/rpcids=([^&]+)/) || [])[1];
+        if (rpc === 'qpEbW') {
+          const clonedResponse = response.clone();
+          const text = await clonedResponse.text();
+          parseGeminiQpEbW(text, url);
+        }
       } catch (e) {
         console.error('[GCCAI] Gemini API intercept error:', e);
       }
     }
-    
+
     return response;
   };
 
-  // Also intercept XMLHttpRequest for older implementations
+  // Also intercept XMLHttpRequest
   const originalXHROpen = XMLHttpRequest.prototype.open;
   const originalXHRSend = XMLHttpRequest.prototype.send;
-  
+
   XMLHttpRequest.prototype.open = function(method, url, ...rest) {
     this._gccaiUrl = url;
     return originalXHROpen.call(this, method, url, ...rest);
   };
-  
+
   XMLHttpRequest.prototype.send = function(...args) {
     this.addEventListener('load', function() {
       if (this._gccaiUrl && this._gccaiUrl.includes('batchexecute')) {
         try {
-          const text = this.responseText;
-          parseGeminiResponse(text, this._gccaiUrl);
+          const rpc = (this._gccaiUrl.match(/rpcids=([^&]+)/) || [])[1];
+          if (rpc === 'qpEbW') parseGeminiQpEbW(this.responseText, this._gccaiUrl);
         } catch (e) {
           console.error('[GCCAI] Gemini XHR intercept error:', e);
         }
@@ -57,59 +60,42 @@
     return originalXHRSend.apply(this, args);
   };
 
-  // Parse Gemini's internal API response
-  function parseGeminiResponse(text) {
-    // Gemini returns data in a nested array format
-    // Look for patterns like: ["conversation_id", "title", timestamp]
-    
-    // Pattern 1: 10-digit Unix timestamps (seconds)
-    const timestampPattern1 = /(\d{10})/g;
-    // Pattern 2: 13-digit Unix timestamps (milliseconds)
-    const timestampPattern2 = /(\d{13})/g;
-    
-    // Find all potential conversation IDs and timestamps
-    // Gemini IDs are typically alphanumeric strings
-    const idPattern = /c_[a-f0-9]{12,}/gi;
-    
-    const ids = text.match(idPattern) || [];
-    const timestamps10 = text.match(timestampPattern1) || [];
-    const timestamps13 = text.match(timestampPattern2) || [];
-    
-    // Convert timestamps to milliseconds
-    const allTimestamps = [
-      ...timestamps10.map(t => parseInt(t) * 1000),
-      ...timestamps13.map(t => parseInt(t))
-    ].filter(t => t > 1600000000000 && t < Date.now() + 86400000); // Valid range
-    
-    // Try to match IDs with timestamps based on position
-    // This is a heuristic approach since Gemini's format is complex
-    if (ids.length > 0 && allTimestamps.length > 0) {
-      // Store timestamps for each ID
-      ids.forEach((id, index) => {
-        if (index < allTimestamps.length) {
-          conversationTimestamps.set(id, allTimestamps[index]);
+  // Parse qpEbW response to extract the last-modified timestamp for the current conversation.
+  // URL contains source-path=%2Fapp%2F{convId} which gives us the conversation ID.
+  function parseGeminiQpEbW(text, url) {
+    // Extract conversation ID from request URL (source-path=/app/{hexId})
+    const pathMatch = url && url.match(/source-path=%2Fapp%2F([a-f0-9]+)/i);
+    if (!pathMatch) return;
+    const convId = pathMatch[1];
+
+    // Extract the JSON payload from batchexecute envelope:
+    // )]}'  <newline>  <length>  <newline>  [["wrb.fr","qpEbW","<escaped-json>",...]...]
+    const match = text.match(/\["wrb\.fr","qpEbW","([\s\S]+?)",null/);
+    if (!match) return;
+
+    try {
+      const inner = JSON.parse('"' + match[1] + '"'); // unescape
+      const parsed = JSON.parse(inner); // [[entries...], convId]
+      const entries = parsed[0];
+      if (!Array.isArray(entries)) return;
+
+      // Each entry: [[type], flag, status, [unix_sec, nanosec], ...]
+      // Take the maximum unix_sec across all entries as the last-updated time.
+      let maxSec = 0;
+      entries.forEach(entry => {
+        const tsArr = entry[3];
+        if (Array.isArray(tsArr) && typeof tsArr[0] === 'number') {
+          if (tsArr[0] > maxSec) maxSec = tsArr[0];
         }
       });
-      
-      // Also try to find timestamp near each ID in the text
-      ids.forEach(id => {
-        const idIndex = text.indexOf(id);
-        if (idIndex !== -1) {
-          // Look for timestamp within 200 characters after the ID
-          const nearbyText = text.substring(idIndex, idIndex + 200);
-          const nearbyTs = nearbyText.match(/(\d{10,13})/);
-          if (nearbyTs) {
-            let ts = parseInt(nearbyTs[1]);
-            if (ts < 1000000000000) ts *= 1000; // Convert to ms if needed
-            if (ts > 1600000000000 && ts < Date.now() + 86400000) {
-              conversationTimestamps.set(id, ts);
-            }
-          }
-        }
-      });
+
+      if (maxSec > 1600000000) {
+        conversationTimestamps.set(convId, maxSec * 1000);
+        console.log('[GCCAI] Gemini qpEbW timestamp for', convId, ':', new Date(maxSec * 1000).toISOString());
+      }
+    } catch (e) {
+      console.error('[GCCAI] Gemini qpEbW parse error:', e);
     }
-    
-    console.log('[GCCAI] Gemini parsed', conversationTimestamps.size, 'conversation timestamps');
   }
 
   function extractConversations() {

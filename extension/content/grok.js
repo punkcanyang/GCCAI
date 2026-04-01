@@ -28,13 +28,17 @@
   }
   let lastConversationsHash = '';
 
-  // Intercept fetch requests
+  // Intercept fetch requests.
+  // Grok conversation list API: GET /rest/app-chat/conversations
+  // Response: { conversations: [{ conversationId, title, createTime, modifyTime, ... }] }
+  // Grok per-conversation API: GET /rest/app-chat/conversations_v2/{id}
+  // Response: { conversation: { conversationId, modifyTime, ... } }
   const originalFetch = window.fetch;
   window.fetch = async function(...args) {
     const response = await originalFetch.apply(this, args);
-    
+
     const url = typeof args[0] === 'string' ? args[0] : args[0]?.url;
-    if (url && (url.includes('/api/conversations') || url.includes('/api/chat'))) {
+    if (url && (url.includes('/rest/app-chat/conversations'))) {
       try {
         const clonedResponse = response.clone();
         const data = await clonedResponse.json();
@@ -43,22 +47,22 @@
         console.error('[GCCAI] Grok API intercept error:', e);
       }
     }
-    
+
     return response;
   };
 
   // Intercept XMLHttpRequest
   const originalXHROpen = XMLHttpRequest.prototype.open;
   const originalXHRSend = XMLHttpRequest.prototype.send;
-  
+
   XMLHttpRequest.prototype.open = function(method, url, ...rest) {
     this._gccaiUrl = url;
     return originalXHROpen.call(this, method, url, ...rest);
   };
-  
+
   XMLHttpRequest.prototype.send = function(...args) {
     this.addEventListener('load', function() {
-      if (this._gccaiUrl && (this._gccaiUrl.includes('/api/conversations') || this._gccaiUrl.includes('/api/chat'))) {
+      if (this._gccaiUrl && this._gccaiUrl.includes('/rest/app-chat/conversations')) {
         try {
           const data = JSON.parse(this.responseText);
           parseGrokResponse(data);
@@ -70,37 +74,31 @@
     return originalXHRSend.apply(this, args);
   };
 
-  // Parse Grok API response
+  // Parse Grok API response.
+  // Handles both list response ({ conversations: [...] }) and
+  // single conversation response ({ conversation: { ... } }).
+  // Time field is modifyTime (ISO string).
   function parseGrokResponse(data) {
     if (!data) return;
-    
-    // Grok returns conversations in various formats
-    const conversations = data.conversations || data.items || data.results || 
-                        (Array.isArray(data) ? data : []);
-    
-    conversations.forEach(conv => {
-      const id = conv.id || conv.conversation_id || conv.uuid;
+
+    // List endpoint: { conversations: [...] }
+    // Single endpoint: { conversation: { ... } }
+    const items = data.conversations ||
+                  (data.conversation ? [data.conversation] : null) ||
+                  (Array.isArray(data) ? data : []);
+
+    items.forEach(conv => {
+      const id = conv.conversationId || conv.id || conv.conversation_id || conv.uuid;
       if (!id) return;
-      
-      let timestamp = null;
-      
-      if (conv.updated_at) {
-        timestamp = typeof conv.updated_at === 'string' 
-          ? Date.parse(conv.updated_at) 
-          : (conv.updated_at < 1000000000000 ? conv.updated_at * 1000 : conv.updated_at);
-      } else if (conv.created_at) {
-        timestamp = typeof conv.created_at === 'string' 
-          ? Date.parse(conv.created_at) 
-          : (conv.created_at < 1000000000000 ? conv.created_at * 1000 : conv.created_at);
-      } else if (conv.timestamp) {
-        timestamp = conv.timestamp < 1000000000000 ? conv.timestamp * 1000 : conv.timestamp;
-      }
-      
+
+      const raw = conv.modifyTime || conv.updateTime || conv.updated_at || conv.updatedAt || conv.created_at || conv.createTime;
+      if (!raw) return;
+      const timestamp = typeof raw === 'string' ? Date.parse(raw) : (raw < 1e12 ? raw * 1000 : raw);
       if (timestamp && timestamp > 1600000000000) {
         conversationTimestamps.set(id, timestamp);
       }
     });
-    
+
     console.log('[GCCAI] Grok parsed', conversationTimestamps.size, 'conversation timestamps');
   }
 
